@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File
 
 from app.schemas.face import FaceAnalysisResponse
 from app.services.face_detection import FaceDetectionService
@@ -10,8 +10,10 @@ router = APIRouter()
     "/analyze-face",
     response_model=FaceAnalysisResponse
 )
-def analyze_face():
+async def analyze_face(
+    image: UploadFile = File(...)
+):
 
     service = FaceDetectionService()
 
-    return service.analyze()
+    return await service.analyze(image)
