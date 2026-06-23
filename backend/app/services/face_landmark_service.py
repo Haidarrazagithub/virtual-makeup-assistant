@@ -7,7 +7,9 @@ from fastapi import HTTPException
 from app.constants.landmarks import (
     LIPS,
     LEFT_EYE,
-    RIGHT_EYE
+    RIGHT_EYE,
+    LEFT_CHEEK,
+    RIGHT_CHEEK
 )
 
 
@@ -67,7 +69,9 @@ class FaceLandmarkService:
             lip_points = []
             left_eye_points = []
             right_eye_points = []
-
+            left_cheek_points = []
+            right_cheek_points = []
+            
             for idx in LIPS:
                 landmark = landmarks.landmark[idx]
 
@@ -92,6 +96,22 @@ class FaceLandmarkService:
                     int(landmark.y * height)
                 ])
 
+            for idx in LEFT_CHEEK:
+                landmark = landmarks.landmark[idx]
+
+                left_cheek_points.append([
+                    int(landmark.x * width),
+                    int(landmark.y * height)
+                ])
+
+            for idx in RIGHT_CHEEK:
+                landmark = landmarks.landmark[idx]
+
+                right_cheek_points.append([
+                    int(landmark.x * width),
+                    int(landmark.y * height)
+                ])
+
             return {
                 "image": image,
                 "lip_points": np.array(
@@ -104,6 +124,15 @@ class FaceLandmarkService:
                 ),
                 "right_eye_points": np.array(
                     right_eye_points,
+                    dtype=np.int32
+                ),
+                "left_cheek_points": np.array(
+                    left_cheek_points,
+                    dtype=np.int32
+                ),
+
+                "right_cheek_points": np.array(
+                    right_cheek_points,
                     dtype=np.int32
                 )
             }
