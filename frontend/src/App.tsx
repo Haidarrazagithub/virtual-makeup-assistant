@@ -9,7 +9,9 @@ import {
   RotateCcw, 
   ShoppingBag, 
   Loader2,
-  Check
+  Check,
+  Bookmark,
+  Trash2
 } from 'lucide-react';
 
 interface Product {
@@ -28,7 +30,27 @@ interface ChatMessage {
   text: string;
 }
 
+interface SavedLook {
+  id: number;
+  name: string;
+  lipstick_color: string;
+  lipstick_opacity: number;
+  blush_color: string;
+  blush_opacity: number;
+  foundation_color: string;
+  foundation_opacity: number;
+  eyeshadow_color: string;
+  eyeshadow_opacity: number;
+  eyeliner_color: string;
+  eyeliner_opacity: number;
+  eyebrow_color: string;
+  eyebrow_opacity: number;
+}
+
 export default function App() {
+  // Session State
+  const [sessionId, setSessionId] = useState<string>('');
+  
   // Image states
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [originalImage, setOriginalImage] = useState<string | null>(null);
@@ -54,16 +76,17 @@ export default function App() {
   const [eyebrowColor, setEyebrowColor] = useState('#2C1E1A');
   const [eyebrowOpacity, setEyebrowOpacity] = useState(0.0);
 
-  // Recommendations & Chat
+  // Recommendations, Chat & Library
   const [recommendedProducts, setRecommendedProducts] = useState<Record<string, Product[]>>({});
   const [chatInput, setChatInput] = useState('');
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
-    { sender: 'bot', text: 'Hi! I am your AI Makeup Expert. Upload a photo or turn on your camera, and type a style request like "Give me a bold party look" or adjust the sliders manually!' }
-  ]);
-
-  // UI state
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [savedLooks, setSavedLooks] = useState<SavedLook[]>([]);
+  
+  // UI states
   const [activeTab, setActiveTab] = useState<'presets' | 'sliders' | 'chat' | 'products'>('presets');
   const [loading, setLoading] = useState(false);
+  const [lookNameInput, setLookNameInput] = useState('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
   
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -74,6 +97,106 @@ export default function App() {
   // Split-Screen comparison slider state & handlers
   const [sliderPos, setSliderPos] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Initialize Session & Load Saved Looks on Mount
+  useEffect(() => {
+    // 1. Get or create Session ID
+    let storedSessionId = localStorage.getItem('beautylens_session_id');
+    if (!storedSessionId) {
+      storedSessionId = 'session_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
+      localStorage.setItem('beautylens_session_id', storedSessionId);
+    }
+    setSessionId(storedSessionId);
+    
+    // 2. Fetch Saved Looks catalog
+    fetchSavedLooks();
+    
+    // 3. Fetch past chat history logs for session
+    fetchChatHistory(storedSessionId);
+  }, []);
+
+  const fetchChatHistory = async (sessId: string) => {
+    try {
+      const res = await axios.get(`/api/v1/sessions/${sessId}/chat`);
+      if (res.data && res.data.length > 0) {
+        setChatHistory(res.data.map((msg: any) => ({
+          sender: msg.sender,
+          text: msg.text
+        })));
+      } else {
+        setChatHistory([
+          { sender: 'bot', text: 'Hi! I am your AI Makeup Expert. Upload a photo or turn on your camera, and type a style request like "Give me a bold party look" or adjust the sliders manually!' }
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch chat logs:", err);
+    }
+  };
+
+  const fetchSavedLooks = async () => {
+    try {
+      const res = await axios.get('/api/v1/looks');
+      setSavedLooks(res.data);
+    } catch (err) {
+      console.error("Failed to load saved looks:", err);
+    }
+  };
+
+  const handleSaveLookSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lookNameInput.trim()) return;
+
+    try {
+      const payload = {
+        name: lookNameInput.trim(),
+        lipstick_color: lipstickColor,
+        lipstick_opacity: lipstickOpacity,
+        blush_color: blushColor,
+        blush_opacity: blushOpacity,
+        foundation_color: foundationColor,
+        foundation_opacity: foundationOpacity,
+        eyeshadow_color: eyeshadowColor,
+        eyeshadow_opacity: eyeshadowOpacity,
+        eyeliner_color: eyelinerColor,
+        eyeliner_opacity: eyelinerOpacity,
+        eyebrow_color: eyebrowColor,
+        eyebrow_opacity: eyebrowOpacity
+      };
+
+      await axios.post('/api/v1/looks', payload);
+      setLookNameInput('');
+      setShowSaveModal(false);
+      fetchSavedLooks();
+    } catch (err) {
+      console.error("Failed to save look configuration:", err);
+      alert("Error bookmarking look. Please try again.");
+    }
+  };
+
+  const deleteLook = async (id: number) => {
+    try {
+      await axios.delete(`/api/v1/looks/${id}`);
+      fetchSavedLooks();
+    } catch (err) {
+      console.error("Failed to delete saved look:", err);
+    }
+  };
+
+  const applySavedLook = (look: SavedLook) => {
+    setActivePreset(`saved_${look.id}`);
+    if (look.lipstick_color) setLipstickColor(look.lipstick_color);
+    setLipstickOpacity(look.lipstick_opacity);
+    if (look.blush_color) setBlushColor(look.blush_color);
+    setBlushOpacity(look.blush_opacity);
+    if (look.foundation_color) setFoundationColor(look.foundation_color);
+    setFoundationOpacity(look.foundation_opacity);
+    if (look.eyeshadow_color) setEyeshadowColor(look.eyeshadow_color);
+    setEyeshadowOpacity(look.eyeshadow_opacity);
+    if (look.eyeliner_color) setEyelinerColor(look.eyeliner_color);
+    setEyelinerOpacity(look.eyeliner_opacity);
+    if (look.eyebrow_color) setEyebrowColor(look.eyebrow_color);
+    setEyebrowOpacity(look.eyebrow_opacity);
+  };
 
   const handleMove = (clientX: number) => {
     if (!containerRef.current) return;
@@ -95,7 +218,7 @@ export default function App() {
     }
   };
 
-  // Auto-apply rendering when sliders change (debounced/controlled via triggers)
+  // Auto-apply rendering when sliders change
   const isInitialMount = useRef(true);
   useEffect(() => {
     if (isInitialMount.current) {
@@ -201,10 +324,15 @@ export default function App() {
       setSkinTone(data.skin_tone);
       setFaceShape(data.face_shape);
       
-      // Seed recommended products list instantly
+      // Initialize stateful session on backend
+      await axios.post('/api/v1/sessions', {
+        id: sessionId,
+        skin_tone: data.skin_tone,
+        face_shape: data.face_shape
+      });
+      
       fetchRecommendedProducts(data.skin_tone, data.face_shape);
       
-      // Auto-load default Office Preset values
       if (data.recommended_presets && data.recommended_presets.office) {
         applyPresetValues('office', data.recommended_presets.office);
       }
@@ -323,7 +451,7 @@ export default function App() {
     }
   };
 
-  // Conversational LLM Recommendation
+  // Stateful AI Recommendation
   const sendChatMessage = async () => {
     if (!chatInput.trim() || !imageBlob) return;
     
@@ -333,11 +461,11 @@ export default function App() {
     setLoading(true);
 
     const formData = new FormData();
-    formData.append('image', imageBlob, 'selfie.jpg');
     formData.append('prompt', userPrompt);
+    formData.append('image', imageBlob, 'selfie.jpg');
 
     try {
-      const res = await axios.post('/api/v1/recommend-look', formData, {
+      const res = await axios.post(`/api/v1/sessions/${sessionId}/prompt`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       
@@ -363,14 +491,11 @@ export default function App() {
         setEyebrowOpacity(opts.eyebrow_opacity ?? 0.0);
       }
 
-      // Update recommendations panel
       if (data.recommended_products) {
         setRecommendedProducts(data.recommended_products);
       }
 
-      const botResponse = `I resolved the preset style to "${data.resolved_preset || 'Custom'}" based on your skin tone (${data.detected_skin_tone || 'Neutral'}) and face shape (${data.detected_face_shape || 'Oval'}). I have updated your try-on preview and added specific cosmetic product recommendations to your shop catalog list!`;
-      setChatHistory(prev => [...prev, { sender: 'bot', text: botResponse }]);
-      setActiveTab('products');
+      setChatHistory(prev => [...prev, { sender: 'bot', text: data.bot_message }]);
     } catch (err) {
       console.error("Chat recommend call failed:", err);
       setChatHistory(prev => [...prev, { sender: 'bot', text: "I ran into a connection issue. Please verify your environment configurations or try again." }]);
@@ -415,7 +540,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Workspace Layout */}
+      {/* Main Workspace Grid */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 p-6 md:p-8 max-w-[1400px] w-full mx-auto">
         {/* Left Column - Camera & Preview Panel */}
         <section className="lg:col-span-7 flex flex-col gap-4">
@@ -437,14 +562,12 @@ export default function App() {
               />
             ) : renderedImage ? (
               <div className="comparison-container w-full h-full max-h-[520px]">
-                {/* Underneath: Rendered makeup image */}
                 <img 
                   src={renderedImage} 
                   alt="Rendered face" 
                   className="comparison-image"
                 />
                 
-                {/* Overlaid: Original raw image with clipPath */}
                 <img 
                   src={originalImage!} 
                   alt="Original face" 
@@ -452,7 +575,6 @@ export default function App() {
                   style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}
                 />
 
-                {/* Sliding handle bar and button */}
                 <div 
                   className="comparison-handle"
                   style={{ left: `${sliderPos}%` }}
@@ -467,7 +589,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Label overlays for visual guidance */}
                 <span className="comparison-label left left-4">BEFORE</span>
                 <span className="comparison-label right right-4">AFTER</span>
               </div>
@@ -483,7 +604,7 @@ export default function App() {
                 <div className="flex gap-4">
                   <button 
                     onClick={startCamera}
-                    className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-medium px-5 py-2.5 rounded-xl transition shadow-lg shadow-purple-600/10 cursor-pointer"
+                    className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-medium px-5 py-2.5 rounded-xl transition shadow-lg shadow-purple-600/10 cursor-pointer border-0"
                   >
                     <Camera className="w-4 h-4" /> Start Camera
                   </button>
@@ -521,7 +642,7 @@ export default function App() {
                   <>
                     <button 
                       onClick={captureSnapshot}
-                      className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition shadow-lg shadow-purple-600/10 cursor-pointer"
+                      className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition shadow-lg shadow-purple-600/10 cursor-pointer border-0"
                     >
                       Capture Photo
                     </button>
@@ -546,6 +667,12 @@ export default function App() {
                     >
                       <Upload className="w-4 h-4" /> Upload Different
                     </button>
+                    <button 
+                      onClick={() => setShowSaveModal(true)}
+                      className="flex items-center gap-1.5 bg-purple-600/20 hover:bg-purple-600/35 text-purple-300 text-sm font-semibold px-4 py-2.5 rounded-xl border border-purple-500/30 transition cursor-pointer"
+                    >
+                      <Bookmark className="w-4 h-4" /> Save Current Look
+                    </button>
                   </>
                 )}
               </div>
@@ -562,7 +689,7 @@ export default function App() {
         </section>
 
         {/* Right Column - Workspaces & Controls Dashboard */}
-        <section className="lg:col-span-5 flex flex-col glass-panel max-h-[640px] md:max-h-[580px] lg:max-h-[580px] overflow-hidden rounded-2xl">
+        <section className="lg:col-span-5 flex flex-col glass-panel max-h-[640px] md:max-h-[580px] lg:max-h-[580px] overflow-hidden rounded-2xl bg-card border border-white/10">
           {/* Navigation Tab Menu */}
           <div className="flex border-b border-white/10 bg-black/20">
             {['presets', 'sliders', 'chat', 'products'].map((tab) => (
@@ -581,59 +708,114 @@ export default function App() {
             
             {/* Presets Grid Tab */}
             {activeTab === 'presets' && (
-              <div className="flex flex-col gap-5 fade-in">
-                <div>
-                  <h4 className="text-white font-semibold font-heading m-0 mb-1 text-sm">Select Look Occasion</h4>
-                  <p className="text-xs text-gray-400">Presets are custom curated matching your classified skin undertones.</p>
-                </div>
-                {!originalImage ? (
-                  <div className="text-center py-12 text-sm text-gray-500">
-                    Please upload or capture a photo first to view custom presets.
+              <div className="flex flex-col gap-6 fade-in">
+                {/* Visual Occasions Presets List */}
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <h4 className="text-white font-semibold font-heading m-0 mb-1 text-sm">Select Look Occasion</h4>
+                    <p className="text-xs text-gray-400">Presets are custom curated matching your classified skin undertones.</p>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-4">
-                    {['office', 'party', 'bridal'].map((name) => {
-                      const isActive = activePreset === name;
-                      const title = name === 'office' ? 'Office Look' : name === 'party' ? 'Glam Party Look' : 'Bridal Occasion Look';
-                      const desc = name === 'office' ? 'Soft, natural tones for everyday professional environment.' : name === 'party' ? 'Bold, glossy lips and darker eyeshadow for evening events.' : 'Deep, warm gold shades with glowing cheeks for ceremony wear.';
-                      
-                      const presetColors: Record<string, string[]> = {
-                        office: ['#DFA8A8', '#DEB887', '#5C4033', '#3D2B1F'],
-                        party: ['#800020', '#4B0082', '#000000', '#1C1C1C'],
-                        bridal: ['#B76E79', '#BC8F8F', '#1C110B', '#2C1E1A']
-                      };
-                      const colors = presetColors[name] || [];
+                  {!originalImage ? (
+                    <div className="text-center py-6 text-sm text-gray-500">
+                      Please upload or capture a photo first to view custom presets.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3">
+                      {['office', 'party', 'bridal'].map((name) => {
+                        const isActive = activePreset === name;
+                        const title = name === 'office' ? 'Office Look' : name === 'party' ? 'Glam Party Look' : 'Bridal Occasion Look';
+                        const desc = name === 'office' ? 'Soft, natural tones for everyday professional environment.' : name === 'party' ? 'Bold, glossy lips and darker eyeshadow for evening events.' : 'Deep, warm gold shades with glowing cheeks for ceremony wear.';
+                        
+                        const presetColors: Record<string, string[]> = {
+                          office: ['#DFA8A8', '#DEB887', '#5C4033', '#3D2B1F'],
+                          party: ['#800020', '#4B0082', '#000000', '#1C1C1C'],
+                          bridal: ['#B76E79', '#BC8F8F', '#1C110B', '#2C1E1A']
+                        };
+                        const colors = presetColors[name] || [];
 
-                      return (
-                        <div 
-                          key={name}
-                          onClick={() => selectPreset(name)}
-                          className={`p-4 rounded-xl border cursor-pointer transition flex justify-between items-center ${isActive ? 'bg-purple-600/10 border-purple-500/50 text-white' : 'bg-white/5 border-white/10 hover:border-purple-500/30 text-gray-400'}`}
-                        >
-                          <div>
-                            <h5 className="font-heading text-sm font-semibold text-white m-0 mb-1">{title}</h5>
-                            <p className="text-xs text-gray-400 max-w-[280px] leading-relaxed mb-2.5">{desc}</p>
-                            <div className="flex gap-1.5 items-center">
-                              <span className="text-[10px] text-gray-500 mr-1">Look Palette:</span>
-                              {colors.map((c, i) => (
-                                <span 
-                                  key={i} 
-                                  className="w-3.5 h-3.5 rounded-full border border-white/20" 
-                                  style={{ backgroundColor: c }} 
-                                />
-                              ))}
+                        return (
+                          <div 
+                            key={name}
+                            onClick={() => selectPreset(name)}
+                            className={`p-3.5 rounded-xl border cursor-pointer transition flex justify-between items-center ${isActive ? 'bg-purple-600/10 border-purple-500/50 text-white' : 'bg-white/5 border-white/10 hover:border-purple-500/30 text-gray-400'}`}
+                          >
+                            <div>
+                              <h5 className="font-heading text-sm font-semibold text-white m-0 mb-1">{title}</h5>
+                              <p className="text-xs text-gray-400 max-w-[280px] leading-relaxed mb-2">{desc}</p>
+                              <div className="flex gap-1.5 items-center">
+                                <span className="text-[10px] text-gray-500 mr-1">Look Palette:</span>
+                                {colors.map((c, i) => (
+                                  <span 
+                                    key={i} 
+                                    className="w-3 h-3 rounded-full border border-white/20" 
+                                    style={{ backgroundColor: c }} 
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                            {isActive && (
+                              <span className="w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center text-white">
+                                <Check className="w-3 h-3" />
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Saved Looks Library Section */}
+                <div className="flex flex-col gap-4 border-t border-white/10 pt-5">
+                  <div>
+                    <h4 className="text-white font-semibold font-heading m-0 mb-1 text-sm">Your Saved Looks</h4>
+                    <p className="text-xs text-gray-400 font-sans">Custom combinations bookmarked by you.</p>
+                  </div>
+                  {savedLooks.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-gray-500 bg-white/[0.01] rounded-xl border border-dashed border-white/5">
+                      No custom looks saved yet. Setup your sliders and click "Save Current Look" to bookmark one.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3">
+                      {savedLooks.map((look) => {
+                        const isActive = activePreset === `saved_${look.id}`;
+                        return (
+                          <div 
+                            key={look.id}
+                            className={`p-3.5 rounded-xl border flex justify-between items-center transition ${isActive ? 'bg-purple-600/10 border-purple-500/50 text-white' : 'bg-white/5 border-white/10 hover:border-purple-500/30 text-gray-400'}`}
+                          >
+                            <div 
+                              onClick={() => applySavedLook(look)}
+                              className="flex-1 cursor-pointer"
+                            >
+                              <h5 className="font-heading text-sm font-semibold text-white m-0 mb-2">{look.name}</h5>
+                              <div className="flex gap-1.5 items-center">
+                                <span className="text-[10px] text-gray-500 mr-1">Shades:</span>
+                                {look.lipstick_color && <span className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ backgroundColor: look.lipstick_color }} title="Lips" />}
+                                {look.blush_color && <span className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ backgroundColor: look.blush_color }} title="Blush" />}
+                                {look.eyeshadow_color && <span className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ backgroundColor: look.eyeshadow_color }} title="Eyeshadow" />}
+                                {look.eyeliner_color && <span className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ backgroundColor: look.eyeliner_color }} title="Eyeliner" />}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              {isActive && (
+                                <span className="w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center text-white">
+                                  <Check className="w-3 h-3" />
+                                </span>
+                              )}
+                              <button 
+                                onClick={() => deleteLook(look.id)}
+                                className="text-gray-500 hover:text-red-400 transition bg-transparent border-0 cursor-pointer p-1"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </div>
-                          {isActive && (
-                            <span className="w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center text-white">
-                              <Check className="w-3 h-3" />
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -646,7 +828,6 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-5">
-                    {/* Lips, Blush, Foundation, Eyeshadow, Eyeliner, Eyebrows mapping */}
                     {[
                       { label: 'LIPSTICK', color: lipstickColor, opacity: lipstickOpacity, setColor: setLipstickColor, setOpacity: setLipstickOpacity, defO: 0.6, swatches: ['#DFA8A8', '#E9967A', '#C41E3A', '#D15276', '#4A0E17', '#800020', '#BC8F8F'] },
                       { label: 'BLUSH', color: blushColor, opacity: blushOpacity, setColor: setBlushColor, setOpacity: setBlushOpacity, defO: 0.4, swatches: ['#FFC0CB', '#FFB7C5', '#F4A460', '#E9967A', '#DC143C'] },
@@ -729,7 +910,7 @@ export default function App() {
                     <button 
                       onClick={sendChatMessage}
                       disabled={loading}
-                      className="chat-send-btn flex items-center justify-center disabled:opacity-50"
+                      className="chat-send-btn flex items-center justify-center disabled:opacity-50 border-0"
                     >
                       {loading ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <Send className="w-4 h-4" />}
                     </button>
@@ -775,7 +956,7 @@ export default function App() {
                                 <span className="product-price">${prod.price.toFixed(2)}</span>
                                 <button 
                                   onClick={() => alert(`Redirecting to shop item: ${prod.brand} ${prod.name}`)}
-                                  className="product-buy-btn flex items-center justify-center"
+                                  className="product-buy-btn flex items-center justify-center border-0 cursor-pointer"
                                 >
                                   <ShoppingBag className="w-4 h-4" />
                                 </button>
@@ -793,6 +974,46 @@ export default function App() {
           </div>
         </section>
       </main>
+
+      {/* Save Look Dialog Modal */}
+      {showSaveModal && (
+        <div className="fixed inset-0 z-100 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="glass-panel w-full max-w-md p-6 rounded-2xl bg-card border border-white/10 shadow-2xl">
+            <h3 className="font-heading text-lg font-semibold text-white mb-2">Save Makeup Configuration</h3>
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              Name your customized look (lipstick, blush, shadows, etc.) to bookmark it in your personal library.
+            </p>
+            <form onSubmit={handleSaveLookSubmit} className="flex flex-col gap-4">
+              <input 
+                type="text" 
+                placeholder="E.g. Summer Warm Glow, Bold Indigo Night" 
+                value={lookNameInput}
+                onChange={(e) => setLookNameInput(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500 transition"
+                autoFocus
+              />
+              <div className="flex justify-end gap-3">
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setLookNameInput('');
+                    setShowSaveModal(false);
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-white text-xs font-semibold px-4 py-2.5 rounded-xl border border-white/10 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl transition cursor-pointer border-0"
+                >
+                  Save Look
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Footer Branding */}
       <footer className="border-t border-white/10 py-6 text-center text-xs text-gray-500 bg-black/10 mt-8">

@@ -17,7 +17,8 @@ class GenAIService:
         cls,
         prompt: str,
         skin_tone: str,
-        face_shape: str
+        face_shape: str,
+        history: Optional[list] = None
     ) -> Dict[str, Any]:
         """
         Translates raw text instructions into rendering configurations.
@@ -28,7 +29,7 @@ class GenAIService:
         # 1. Attempt using Gemini API if configured
         if settings.GEMINI_API_KEY:
             try:
-                result = await cls._call_gemini_api(prompt, skin_tone, face_shape)
+                result = await cls._call_gemini_api(prompt, skin_tone, face_shape, history)
                 if result:
                     return result
             except Exception as e:
@@ -47,9 +48,15 @@ class GenAIService:
         return cls._local_rule_parser(prompt_lower)
 
     @classmethod
-    async def _call_gemini_api(cls, prompt: str, skin_tone: str, face_shape: str) -> Optional[Dict[str, Any]]:
-        # Stable Gemini 2.0 API endpoint
-        url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent"
+    async def _call_gemini_api(
+        cls, 
+        prompt: str, 
+        skin_tone: str, 
+        face_shape: str,
+        history: Optional[list] = None
+    ) -> Optional[Dict[str, Any]]:
+        # Stable Gemini 2.5 API v1beta endpoint
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
         
         headers = {
             "x-goog-api-key": settings.GEMINI_API_KEY,
@@ -68,19 +75,34 @@ class GenAIService:
             "eyebrow_opacity (float 0.0-1.0 or null). "
             "Output ONLY the JSON object. Do not include markdown tags."
         )
+
+        contents = []
+        # Append historical turns if present
+        if history:
+            for msg in history:
+                role = "user" if msg.sender == "user" else "model"
+                contents.append({
+                    "role": role,
+                    "parts": [{"text": msg.text}]
+                })
+        
+        # Add current turn
+        contents.append({
+            "role": "user",
+            "parts": [{
+                "text": f"User Prompt: {prompt}\nUser Skin Tone: {skin_tone}\nUser Face Shape: {face_shape}"
+            }]
+        })
+
         payload = {
-            "contents": [{
-                "parts": [{
-                    "text": f"User Prompt: {prompt}\nUser Skin Tone: {skin_tone}\nUser Face Shape: {face_shape}"
-                }]
-            }],
-            "systemInstruction": {
+            "contents": contents,
+            "system_instruction": {
                 "parts": [{
                     "text": system_instruction
                 }]
             },
-            "generationConfig": {
-                "responseMimeType": "application/json"
+            "generation_config": {
+                "response_mime_type": "application/json"
             }
         }
         async with httpx.AsyncClient() as client:
@@ -188,5 +210,25 @@ class GenAIService:
             else:
                 opts["eyebrow_color"] = "#3D2B1F"  # Default brown
             opts["eyebrow_opacity"] = 0.5
+
+        # 6. Smart Grooming Default: If nothing was matched, apply a subtle natural grooming look
+        is_empty = (
+            opts["look_preset"] is None and
+            opts["lipstick_color"] is None and
+            opts["blush_color"] is None and
+            opts["foundation_color"] is None and
+            opts["eyeshadow_color"] is None and
+            opts["eyeliner_color"] is None and
+            opts["eyebrow_color"] is None
+        )
+        if is_empty:
+            # Default to a subtle "groomed" natural look
+            opts["look_preset"] = "office"
+            opts["lipstick_color"] = "#DFA8A8" 
+            opts["lipstick_opacity"] = 0.25      # Very light natural lip tint
+            opts["foundation_color"] = "#EED5C4" 
+            opts["foundation_opacity"] = 0.25    # Even skin tone
+            opts["eyebrow_color"] = "#3D2B1F"
+            opts["eyebrow_opacity"] = 0.3        # Light brow definition
 
         return opts
