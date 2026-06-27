@@ -23,5 +23,5 @@ async def analyze_face(
     image_bytes = await image.read()
 
     image = ImageService.decode(image_bytes)
-
-    return face_service.analyze(image)
+    context = face_service.pipeline.process(image)
+    return face_service.analyze(context)

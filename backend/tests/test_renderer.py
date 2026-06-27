@@ -4,7 +4,7 @@ import cv2
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.vision.makeup_rendering_service import MakeupRenderingService
+from app.services.rendering.rendering_service import RenderingService
 from app.services.vision.face_analysis_service import FaceAnalysisService
 
 
@@ -24,17 +24,12 @@ class TestRenderer(unittest.TestCase):
         image = cv2.imread(self.image_path)
         self.assertIsNotNone(image, "Failed to load test image.")
 
-        # Extract landmarks first
-        response = self.face_service.analyze(image)
-        self.assertTrue(response.face_detected)
+        # Get the actual landmarks and context from the pipeline orchestrator
+        result = self.face_service.pipeline.process(image)
 
-        # Get the actual landmarks
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = self.face_service.face_mesh.process(rgb_image)
-        self.assertTrue(results.multi_face_landmarks)
-        
-        from app.services.vision.landmark_service import LandmarkService
-        landmarks = LandmarkService.get_all_landmarks(results.multi_face_landmarks[0].landmark)
+        # Extract landmarks first
+        response = self.face_service.analyze(result)
+        self.assertTrue(response.face_detected)
 
         # Apply makeup options
         options = {
@@ -52,7 +47,9 @@ class TestRenderer(unittest.TestCase):
             "eyebrow_opacity": 0.4
         }
 
-        rendered = MakeupRenderingService.apply_makeup(image, landmarks, options)
+        from app.schemas.rendering import RenderingOptions
+        rendering_opts = RenderingOptions(**options)
+        rendered = RenderingService.render_makeup(result, rendering_opts)
         
         # Save output image for developer review
         cv2.imwrite(self.output_path, rendered)

@@ -1,23 +1,17 @@
 import io
 import cv2
-import mediapipe as mp
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.services.vision.image_service import ImageService
 from app.services.vision.image_validator import ImageValidator
-from app.services.vision.landmark_service import LandmarkService
-from app.services.vision.makeup_rendering_service import MakeupRenderingService
+from app.services.vision.pipeline import VisionPipeline
+from app.services.rendering.rendering_service import RenderingService
+from app.constants.presets import PRESETS
+from app.schemas.rendering import RenderingOptions
 
 router = APIRouter()
-
-# Set up local Face Mesh for the rendering controller
-face_mesh = mp.solutions.face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-)
+vision_pipeline = VisionPipeline()
 
 
 @router.post("/render-makeup")
@@ -38,7 +32,7 @@ async def render_makeup(
     eyebrow_opacity: float = Form(0.0),
 ):
     """
-    Accepts a selfie image, runs MediaPipe Face Mesh, applies the specified
+    Accepts a selfie image, runs VisionPipeline to get VisionContext, applies the specified
     blush, lipstick, foundation, eyeshadow, eyeliner, and eyebrow filters (either via preset or manually),
     and streams the finished JPEG.
     """
@@ -47,18 +41,8 @@ async def render_makeup(
     image_bytes = await image.read()
     img_cv = ImageService.decode(image_bytes)
 
-    # Extract Face Mesh landmarks
-    rgb_img = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_img)
-
-    if not results.multi_face_landmarks:
-        raise HTTPException(
-            status_code=400,
-            detail="No face detected in the image."
-        )
-
-    face_landmarks = results.multi_face_landmarks[0].landmark
-    landmarks = LandmarkService.get_all_landmarks(face_landmarks)
+    # Extract Face Mesh landmarks & metadata in a single pipeline execution
+    context = vision_pipeline.process(img_cv)
 
     # Normalize empty inputs to None
     def normalize_input(val: str) -> str:
@@ -76,9 +60,7 @@ async def render_makeup(
     # Resolve presets if look_preset is provided
     base_opts = {}
     if look_preset and look_preset.strip() != "":
-        from app.services.vision.skin_tone_service import SkinToneService
-        from app.constants.presets import PRESETS
-        skin_tone = SkinToneService.detect_skin_tone(img_cv, landmarks)
+        skin_tone = context.skin_tone
         base_opts = PRESETS.get(skin_tone, {}).get(look_preset, {})
 
     # Collect options (user parameters override preset defaults)
@@ -96,16 +78,15 @@ async def render_makeup(
         "eyebrow_color": eyebrow_color if eyebrow_color else base_opts.get("eyebrow_color"),
         "eyebrow_opacity": eyebrow_opacity if eyebrow_opacity > 0.0 else base_opts.get("eyebrow_opacity", 0.0),
     }
-
-    # Render filters
+    # Render filters using rendering service which consumes the context
     try:
-        rendered_img = MakeupRenderingService.apply_makeup(img_cv, landmarks, options)
+        rendering_opts = RenderingOptions(**options)
+        rendered_img = RenderingService.render_makeup(context, rendering_opts)
     except ValueError as e:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid color parameter format: {str(e)}"
         )
-
 
     # Encode to JPEG
     success, encoded_img = cv2.imencode(".jpg", rendered_img)

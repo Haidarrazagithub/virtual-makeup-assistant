@@ -2,8 +2,6 @@ import uuid
 import json
 import base64
 import cv2
-import io
-import mediapipe as mp
 from typing import Optional, List
 from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
 from sqlalchemy.orm import Session
@@ -17,21 +15,15 @@ from app.schemas.chat import (
 )
 from app.services.vision.image_validator import ImageValidator
 from app.services.vision.image_service import ImageService
-from app.services.vision.landmark_service import LandmarkService
-from app.services.vision.skin_tone_service import SkinToneService
-from app.services.vision.face_shape_service import FaceShapeService
-from app.services.vision.makeup_rendering_service import MakeupRenderingService
-from app.services.recommendation.recommendation_service import RecommendationService
-from app.services.recommendation.genai_service import GenAIService
+from app.services.vision.pipeline import VisionPipeline
+from app.services.vision.context import VisionContext
+from app.services.rendering.rendering_service import RenderingService
+from app.services.catalog.catalog_service import CatalogService
+from app.services.assistant.genai_service import GenAIService
+from app.schemas.rendering import RenderingOptions
 
 router = APIRouter()
-
-face_mesh = mp.solutions.face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5
-)
+pipeline = VisionPipeline()
 
 
 @router.post("/sessions", response_model=ChatSessionResponse)
@@ -52,7 +44,6 @@ def create_session(session_in: ChatSessionCreate, db: Session = Depends(get_db))
         db.commit()
         db.refresh(db_session)
     else:
-        # Update details if provided
         if session_in.skin_tone:
             db_session.skin_tone = session_in.skin_tone
         if session_in.face_shape:
@@ -70,7 +61,6 @@ def get_chat_history(session_id: str, db: Session = Depends(get_db)):
     """
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
-        # Create session on the fly
         session = ChatSession(id=session_id)
         db.add(session)
         db.commit()
@@ -88,10 +78,9 @@ async def process_chat_prompt(
 ):
     """
     Saves the user prompt, reads the last 6 messages for context memory,
-    queries the Gemini LLM model, saves the resolved makeup values, and renders
+    queries the assistant LLM, saves the resolved makeup values, and renders
     the options if an image is provided.
     """
-    # 1. Fetch or create session
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
         session = ChatSession(id=session_id)
@@ -99,31 +88,29 @@ async def process_chat_prompt(
         db.commit()
         db.refresh(session)
 
-    # 2. Extract skin tone & face shape from active image if provided
-    skin_tone = session.skin_tone or "Neutral"
-    face_shape = session.face_shape or "Oval"
-    img_cv = None
-    landmarks = None
-
+    # Decode and analyze image if uploaded, else load partial context from database session
     if image:
         await ImageValidator.validate(image)
         image_bytes = await image.read()
         img_cv = ImageService.decode(image_bytes)
         
-        rgb_img = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb_img)
-        if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0].landmark
-            landmarks = LandmarkService.get_all_landmarks(face_landmarks)
-            skin_tone = SkinToneService.detect_skin_tone(img_cv, landmarks)
-            face_shape = FaceShapeService.detect_face_shape(landmarks)
-            
-            # Save tone and shape to session history
-            session.skin_tone = skin_tone
-            session.face_shape = face_shape
-            db.commit()
+        context = pipeline.process(img_cv)
+        
+        session.skin_tone = context.skin_tone
+        session.face_shape = context.face_shape
+        db.commit()
+    else:
+        context = VisionContext(
+            original_image=None,
+            rgb_image=None,
+            landmarks=[],
+            regions={},
+            skin_tone=session.skin_tone or "Neutral",
+            face_shape=session.face_shape or "Oval",
+            face_count=0
+        )
 
-    # 3. Read previous 6 messages for conversational context
+    # Read previous 6 messages for conversational context
     history_msgs = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
@@ -131,10 +118,9 @@ async def process_chat_prompt(
         .limit(6)
         .all()
     )
-    # Reverse so they are chronological
     history_msgs.reverse()
 
-    # 4. Save User prompt to database
+    # Save User prompt to database
     user_msg = ChatMessage(
         session_id=session_id,
         sender="user",
@@ -143,15 +129,15 @@ async def process_chat_prompt(
     db.add(user_msg)
     db.commit()
 
-    # 5. Query LLM with history context
-    genai_opts = await GenAIService.translate_prompt(prompt, skin_tone, face_shape, history_msgs)
+    # Query LLM with history context and VisionContext
+    genai_opts = await GenAIService.translate_prompt(prompt, context, history_msgs)
 
-    # 6. Compile makeup options (presets + overrides)
+    # Compile makeup options (presets + overrides)
     look_preset = genai_opts.get("look_preset")
     base_opts = {}
     if look_preset:
         from app.constants.presets import PRESETS
-        base_opts = PRESETS.get(skin_tone, {}).get(look_preset, {})
+        base_opts = PRESETS.get(context.skin_tone, {}).get(look_preset, {})
 
     compiled_options = {}
     keys = [
@@ -170,11 +156,12 @@ async def process_chat_prompt(
         else:
             compiled_options[key] = preset_val if preset_val is not None else (0.0 if "opacity" in key else None)
 
-    # 7. Render makeup overlay if image is loaded
+    # Render makeup overlay if image is loaded
     rendered_image_uri = None
-    if img_cv is not None and landmarks:
+    if context.original_image is not None and len(context.landmarks) > 0:
         try:
-            rendered_img = MakeupRenderingService.apply_makeup(img_cv, landmarks, compiled_options)
+            rendering_opts = RenderingOptions(**compiled_options)
+            rendered_img = RenderingService.render_makeup(context, rendering_opts)
             success, encoded_img = cv2.imencode(".jpg", rendered_img)
             if success:
                 base64_img = base64.b64encode(encoded_img.tobytes()).decode("utf-8")
@@ -185,10 +172,10 @@ async def process_chat_prompt(
                 detail=f"Rendering failed: {str(e)}"
             )
 
-    # 8. Fetch product recommendations
-    recommended_products = RecommendationService.get_recommendations(db, skin_tone, face_shape)
+    # Fetch product recommendations matching our context
+    recommended_products = CatalogService.get_recommendations(db, context)
 
-    # 9. Save Bot response and applied settings to database
+    # Save Bot response and applied settings to database
     applied_parts = []
     if compiled_options.get("lipstick_color") and compiled_options.get("lipstick_opacity", 0.0) > 0.0:
         applied_parts.append(f"lipstick: {compiled_options['lipstick_color']} ({int(compiled_options['lipstick_opacity']*100)}% opacity)")
@@ -219,8 +206,8 @@ async def process_chat_prompt(
     db.commit()
 
     return {
-        "detected_skin_tone": skin_tone,
-        "detected_face_shape": face_shape,
+        "detected_skin_tone": context.skin_tone,
+        "detected_face_shape": context.face_shape,
         "resolved_preset": look_preset,
         "applied_options": compiled_options,
         "recommended_products": recommended_products,

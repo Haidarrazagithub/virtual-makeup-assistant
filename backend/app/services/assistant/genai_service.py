@@ -3,6 +3,8 @@ import json
 import logging
 from typing import Dict, Any, Optional
 from app.core.settings import settings
+from app.schemas.recommendation import LLMMakeupRecommendation
+from app.services.vision.context import VisionContext
 
 logger = logging.getLogger(__name__)
 
@@ -16,36 +18,44 @@ class GenAIService:
     async def translate_prompt(
         cls,
         prompt: str,
-        skin_tone: str,
-        face_shape: str,
+        context: VisionContext,
         history: Optional[list] = None
     ) -> Dict[str, Any]:
         """
-        Translates raw text instructions into rendering configurations.
+        Translates raw text instructions into rendering configurations using VisionContext.
         Uses OpenAI or Gemini if configured, else falls back to a rules-based parser.
         """
         prompt_lower = prompt.lower()
+        raw_result = None
         
+        skin_tone = context.skin_tone
+        face_shape = context.face_shape
+
         # 1. Attempt using Gemini API if configured
         if settings.GEMINI_API_KEY:
             try:
-                result = await cls._call_gemini_api(prompt, skin_tone, face_shape, history)
-                if result:
-                    return result
+                raw_result = await cls._call_gemini_api(prompt, skin_tone, face_shape, history)
             except Exception as e:
                 logger.error(f"Gemini API call failed, falling back: {e}")
 
         # 2. Attempt using OpenAI API if configured
-        if settings.OPENAI_API_KEY:
+        if not raw_result and settings.OPENAI_API_KEY:
             try:
-                result = await cls._call_openai_api(prompt, skin_tone, face_shape)
-                if result:
-                    return result
+                raw_result = await cls._call_openai_api(prompt, skin_tone, face_shape)
             except Exception as e:
                 logger.error(f"OpenAI API call failed, falling back: {e}")
 
         # 3. Fallback: Rules-based local parsing
-        return cls._local_rule_parser(prompt_lower)
+        if not raw_result:
+            raw_result = cls._local_rule_parser(prompt_lower)
+
+        # Validate options payload with Pydantic schema
+        try:
+            validated = LLMMakeupRecommendation(**raw_result)
+            return validated.model_dump()
+        except Exception as e:
+            logger.warning(f"AI response validation failed, returning raw payload: {e}")
+            return raw_result
 
     @classmethod
     async def _call_gemini_api(
@@ -55,7 +65,6 @@ class GenAIService:
         face_shape: str,
         history: Optional[list] = None
     ) -> Optional[Dict[str, Any]]:
-        # Stable Gemini 2.5 API v1beta endpoint
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
         
         headers = {
@@ -72,12 +81,12 @@ class GenAIService:
             "foundation_opacity (float 0.0-1.0 or null), eyeshadow_color (hex or null), "
             "eyeshadow_opacity (float 0.0-1.0 or null), eyeliner_color (hex or null), "
             "eyeliner_opacity (float 0.0-1.0 or null), eyebrow_color (hex or null), "
-            "eyebrow_opacity (float 0.0-1.0 or null). "
+            "eyebrow_opacity (float 0.0-1.0 or null), "
+            "generate_image_prompt (strictly only populate this string if the user explicitly asks to generate/show/visualize a brand new image or inspiration photo of a model face or product; write a descriptive high-quality text-to-image prompt, else null). "
             "Output ONLY the JSON object. Do not include markdown tags."
         )
 
         contents = []
-        # Append historical turns if present
         if history:
             for msg in history:
                 role = "user" if msg.sender == "user" else "model"
@@ -86,7 +95,6 @@ class GenAIService:
                     "parts": [{"text": msg.text}]
                 })
         
-        # Add current turn
         contents.append({
             "role": "user",
             "parts": [{
@@ -111,6 +119,8 @@ class GenAIService:
                 data = resp.json()
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
                 return json.loads(text)
+            else:
+                logger.error(f"Gemini API returned status {resp.status_code}: {resp.text}")
         return None
 
     @classmethod
@@ -130,7 +140,8 @@ class GenAIService:
                         "You are a makeup assistant. Parse requests and return a JSON object with keys: "
                         "look_preset, lipstick_color, lipstick_opacity, blush_color, blush_opacity, "
                         "foundation_color, foundation_opacity, eyeshadow_color, eyeshadow_opacity, "
-                        "eyeliner_color, eyeliner_opacity, eyebrow_color, eyebrow_opacity."
+                        "eyeliner_color, eyeliner_opacity, eyebrow_color, eyebrow_opacity, "
+                        "generate_image_prompt."
                     )
                 },
                 {
@@ -149,9 +160,6 @@ class GenAIService:
 
     @classmethod
     def _local_rule_parser(cls, prompt_lower: str) -> Dict[str, Any]:
-        """
-        Regex/keyword matching fallback to construct look profiles locally.
-        """
         opts: Dict[str, Any] = {
             "look_preset": None,
             "lipstick_color": None,
@@ -165,7 +173,8 @@ class GenAIService:
             "eyeliner_color": None,
             "eyeliner_opacity": 0.0,
             "eyebrow_color": None,
-            "eyebrow_opacity": 0.0
+            "eyebrow_opacity": 0.0,
+            "generate_image_prompt": None
         }
 
         # 1. Preset Matching
@@ -178,13 +187,13 @@ class GenAIService:
 
         # 2. Lipstick Customization
         if "red" in prompt_lower and ("lipstick" in prompt_lower or "lip" in prompt_lower):
-            opts["lipstick_color"] = "#E0115F"  # Ruby Red
+            opts["lipstick_color"] = "#E0115F"
             opts["lipstick_opacity"] = 0.75
         elif "pink" in prompt_lower and ("lipstick" in prompt_lower or "lip" in prompt_lower):
-            opts["lipstick_color"] = "#FFC0CB"  # Pink
+            opts["lipstick_color"] = "#FFC0CB"
             opts["lipstick_opacity"] = 0.6
         elif "coral" in prompt_lower and ("lipstick" in prompt_lower or "lip" in prompt_lower):
-            opts["lipstick_color"] = "#E9967A"  # Coral
+            opts["lipstick_color"] = "#E9967A"
             opts["lipstick_opacity"] = 0.6
 
         # 3. Eyeshadow Customization
@@ -200,7 +209,7 @@ class GenAIService:
             if "brown" in prompt_lower:
                 opts["eyeliner_color"] = "#5C4033"
             else:
-                opts["eyeliner_color"] = "#000000"  # Default black
+                opts["eyeliner_color"] = "#000000"
             opts["eyeliner_opacity"] = 0.75
 
         # 5. Eyebrows Customization
@@ -208,10 +217,10 @@ class GenAIService:
             if "black" in prompt_lower:
                 opts["eyebrow_color"] = "#1C1C1C"
             else:
-                opts["eyebrow_color"] = "#3D2B1F"  # Default brown
+                opts["eyebrow_color"] = "#3D2B1F"
             opts["eyebrow_opacity"] = 0.5
 
-        # 6. Smart Grooming Default: If nothing was matched, apply a subtle natural grooming look
+        # 6. Default fallback
         is_empty = (
             opts["look_preset"] is None and
             opts["lipstick_color"] is None and
@@ -222,13 +231,12 @@ class GenAIService:
             opts["eyebrow_color"] is None
         )
         if is_empty:
-            # Default to a subtle "groomed" natural look
             opts["look_preset"] = "office"
             opts["lipstick_color"] = "#DFA8A8" 
-            opts["lipstick_opacity"] = 0.25      # Very light natural lip tint
+            opts["lipstick_opacity"] = 0.25
             opts["foundation_color"] = "#EED5C4" 
-            opts["foundation_opacity"] = 0.25    # Even skin tone
+            opts["foundation_opacity"] = 0.25
             opts["eyebrow_color"] = "#3D2B1F"
-            opts["eyebrow_opacity"] = 0.3        # Light brow definition
+            opts["eyebrow_opacity"] = 0.3
 
         return opts
