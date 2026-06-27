@@ -3,6 +3,7 @@ uvicorn[standard]
 python-multipart
 pydantic
 opencv-python
+pydantic-settings
 mediapipe==0.10.14
 numpy
 pillow
