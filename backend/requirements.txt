@@ -8,3 +8,5 @@ mediapipe==0.10.14
 numpy
 pillow
 python-dotenv
+httpx
+sqlalchemy
